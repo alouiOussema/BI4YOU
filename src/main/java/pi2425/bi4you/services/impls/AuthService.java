@@ -1,126 +1,146 @@
 package pi2425.bi4you.services.impls;
 
 import lombok.AccessLevel;
-import lombok.AllArgsConstructor;
+import lombok.RequiredArgsConstructor;
 import lombok.experimental.FieldDefaults;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import pi2425.bi4you.enmus.ERole;
+import pi2425.bi4you.entities.PasswordResetToken;
 import pi2425.bi4you.entities.Roles;
 import pi2425.bi4you.entities.User;
+import pi2425.bi4you.repositories.PasswordResetTokenRepository;
 import pi2425.bi4you.repositories.RolesRepository;
 import pi2425.bi4you.repositories.UserRepository;
+import pi2425.bi4you.services.EmailService;
 import pi2425.bi4you.services.inters.IAuthService;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 @Service
-@AllArgsConstructor
-@FieldDefaults(level= AccessLevel.PRIVATE)
+@RequiredArgsConstructor
+@FieldDefaults(level = AccessLevel.PRIVATE)
+@Transactional
 public class AuthService implements IAuthService {
-    UserRepository userRepo;
-    RolesRepository roleRepo;
-    PasswordEncoder encoder;
+    
+    final UserRepository userRepo;
+    final RolesRepository roleRepo;
+    final PasswordResetTokenRepository tokenRepo;
+    final PasswordEncoder encoder;
+    final EmailService emailService;
+    
+    @Value("${app.passwordResetTokenExpirationMs}")
+    private long passwordResetTokenExpirationMs;
 
     @Override
+    @Transactional(readOnly = true)
     public Boolean existsByUsername(String username) {
         return userRepo.existsByUsername(username);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Boolean existsByEmail(String email) {
         return userRepo.existsByEmail(email);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Optional<User> findByUsername(String username) {
         return userRepo.findByUsername(username);
     }
+
     @Override
+    @Transactional(readOnly = true)
     public Optional<Roles> findByName(ERole name) {
         return roleRepo.findByName(name);
     }
 
     @Override
-    public List<Roles> findAllRoles() { return roleRepo.findAll();}
+    @Transactional(readOnly = true)
+    public List<Roles> findAllRoles() {
+        return roleRepo.findAll();
+    }
+
     @Override
     public User saveUser(User user) {
-        user.setCreationDate(new Date(System.currentTimeMillis()));
-        user.setPassword(encoder.encode(user.getPassword()));
-
-        return userRepo.save(user); }
+        return userRepo.save(user);
+    }
 
     @Override
     public String forgetPassword(String email) {
-
         Optional<User> userOptional = userRepo.findByEmail(email);
 
         if (userOptional.isEmpty()) {
-            return "Invalid email.";
+            throw new RuntimeException("Aucun compte associé à cet email");
         }
 
         User user = userOptional.get();
+        
+        if (!user.isActive()) {
+            throw new RuntimeException("Compte désactivé. Contactez l'administrateur.");
+        }
+
+        // Delete existing tokens for this user
+        tokenRepo.deleteByUser(user);
+
+        // Generate new token
         String token = generateToken();
-        user.setToken(token);
-        user.setTokenCreationDate(LocalDateTime.now());
+        LocalDateTime expiryDate = LocalDateTime.now().plusSeconds(passwordResetTokenExpirationMs / 1000);
+        
+        PasswordResetToken resetToken = new PasswordResetToken(token, user, expiryDate);
+        tokenRepo.save(resetToken);
 
-        String subject = "Forget Password Request";
-        String body = "Your verification code is: " + token;
-
-        //sendEmail(email, subject, body);
-        userRepo.save(user);
-
-        return user.getToken();
+        // Send email
+        try {
+            emailService.sendPasswordResetEmail(user.getEmail(), token);
+            return "Un email de réinitialisation a été envoyé à votre adresse";
+        } catch (Exception e) {
+            throw new RuntimeException("Erreur lors de l'envoi de l'email: " + e.getMessage());
+        }
     }
 
     @Override
     public String resetPassword(String token, String password) {
+        Optional<PasswordResetToken> tokenOptional = tokenRepo.findByToken(token);
 
-        Optional<User> userOptional = userRepo.findByToken(token);
-
-        if (userOptional.isEmpty()) {
-            return "Invalid token.";
+        if (tokenOptional.isEmpty()) {
+            throw new RuntimeException("Token invalide");
         }
 
-        LocalDateTime tokenCreationDate = userOptional.get().getTokenCreationDate();
+        PasswordResetToken resetToken = tokenOptional.get();
 
-        if (isTokenExpired(tokenCreationDate)) {
-            return "Token expired.";
-
+        if (resetToken.isExpired()) {
+            tokenRepo.delete(resetToken);
+            throw new RuntimeException("Token expiré");
         }
 
-        User user = userOptional.get();
+        if (resetToken.isUsed()) {
+            throw new RuntimeException("Token déjà utilisé");
+        }
+
+        User user = resetToken.getUser();
         user.setPassword(encoder.encode(password));
-        user.setToken(null);
-        user.setTokenCreationDate(null);
-
+        user.setFirstLogin(false);
         userRepo.save(user);
 
-        return "Your password successfully updated.";
+        // Mark token as used
+        resetToken.setUsed(true);
+        tokenRepo.save(resetToken);
+
+        // Clean up expired tokens
+        tokenRepo.deleteExpiredTokens(LocalDateTime.now());
+
+        return "Mot de passe réinitialisé avec succès";
     }
+
     private String generateToken() {
-        return String.valueOf(UUID.randomUUID()) +
-                UUID.randomUUID();
+        return UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase();
     }
-    private boolean isTokenExpired(LocalDateTime tokenCreationDate) {
-        LocalDateTime now = LocalDateTime.now();
-        Duration diff = Duration.between(tokenCreationDate, now);
-        return diff.toMinutes() >= 30;
-    }
-
-    /*public void sendEmail(String toEmail, String subject, String body) {
-        SimpleMailMessage message = new SimpleMailMessage();
-        message.setFrom("AgriGoodness@gmail.com");
-        message.setTo(toEmail);
-        message.setSubject(subject);
-        message.setText(body);
-
-        emailSender.send(message);
-        System.out.println("Mail Sent successfully...");
-    }*/
 }
+
