@@ -79,7 +79,7 @@ public class UserService implements IUserService {
         if (createUserRequest.getRoles() != null && !createUserRequest.getRoles().isEmpty()) {
             for (String roleName : createUserRequest.getRoles()) {
                 try {
-                    ERole eRole = ERole.valueOf(roleName);
+                    ERole eRole = ERole.valueOf( roleName);
                     Roles role = authService.findByName(eRole)
                             .orElseThrow(() -> new RuntimeException("Rôle non trouvé: " + roleName));
                     roles.add(role);
@@ -138,7 +138,7 @@ public class UserService implements IUserService {
             Set<Roles> roles = new HashSet<>();
             for (String roleName : updateUserRequest.getRoles()) {
                 try {
-                    ERole eRole = ERole.valueOf(roleName);
+                    ERole eRole = ERole.valueOf("ROLE_" + roleName.toUpperCase());
                     Roles role = authService.findByName(eRole)
                             .orElseThrow(() -> new RuntimeException("Rôle non trouvé: " + roleName));
                     roles.add(role);
